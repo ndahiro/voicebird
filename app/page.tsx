@@ -1,0 +1,445 @@
+"use client"
+
+import * as React from "react"
+import { useSession } from "next-auth/react"
+import { useRouter } from "next/navigation"
+import { ToastProvider, useToast } from "@/components/ui/toast"
+import {
+  BackendMode,
+  InputMode
+} from "@/lib/types"
+import {
+  ENV,
+  DEFAULT_BACKEND,
+  SUPPORTED_VIDEO_FORMATS,
+  ALL_SUPPORTED_FORMATS,
+  SUNBIRD_TRANSLATION_CODES,
+  LOCAL_TRANSLATION_LANGS,
+  DEFAULT_ASR_MODEL
+} from "@/lib/config"
+import { sunbirdAPI, huggingFaceAPI, localAPI, type TranscriptionSegment, type TranscriptionProgress } from "@/lib/api"
+
+import { Header } from "@/components/voicebird/Header"
+import { UploadCard } from "@/components/voicebird/UploadCard"
+import { TranscriptionCard } from "@/components/voicebird/TranscriptionCard"
+import { FeatureInfo } from "@/components/voicebird/FeatureInfo"
+
+function TranscriptionApp() {
+  const { data: session, status } = useSession()
+  const router = useRouter()
+
+  // All hooks must be called before any conditional returns
+  const backendMode: BackendMode = DEFAULT_BACKEND
+  const serverUrl = ENV.LOCAL_SERVER_URL
+  const [inputMode, setInputMode] = React.useState<InputMode>("file")
+  const [file, setFile] = React.useState<File | null>(null)
+  const [videoUrl, setVideoUrl] = React.useState("")
+  const [language, setLanguage] = React.useState("auto")
+  const [transcription, setTranscription] = React.useState("")
+  const [segments, setSegments] = React.useState<TranscriptionSegment[]>([])
+  const [transcriptionProgress, setTranscriptionProgress] = React.useState<TranscriptionProgress | null>(null)
+  const [isTranscribing, setIsTranscribing] = React.useState(false)
+  const [asrModel, setAsrModel] = React.useState(DEFAULT_ASR_MODEL)
+  const [separateSpeech, setSeparateSpeech] = React.useState(false) // demucs noise reduction (Buzz-style)
+  const [diarize, setDiarize] = React.useState(false)               // pyannote speaker identification
+  const [recordedAudio, setRecordedAudio] = React.useState<File | null>(null)
+
+  // Translation/Interpretation settings
+  const [enableTranslation, setEnableTranslation] = React.useState(false)
+  const [targetLanguage, setTargetLanguage] = React.useState("eng")
+  const [translation, setTranslation] = React.useState("")
+  const [isTranslating, setIsTranslating] = React.useState(false)
+
+  // Local server settings
+  const [serverStatus, setServerStatus] = React.useState<"unknown" | "connected" | "error">("unknown")
+
+  const { addToast } = useToast()
+
+  const isEnglishSource = language === "eng"
+  const isEnglishTarget = targetLanguage === "eng"
+
+  // Use extended language list for local backend
+  const supportedCodes = backendMode === "local"
+    ? [...LOCAL_TRANSLATION_LANGS, "eng"]
+    : SUNBIRD_TRANSLATION_CODES
+
+  const sourceSupported = supportedCodes.includes(language)
+  const targetSupported = supportedCodes.includes(targetLanguage)
+
+  // Allow any supported pair for local backend
+  const isValidSunbirdPair = backendMode === "local"
+    ? (sourceSupported && targetSupported)
+    : (sourceSupported && targetSupported && isEnglishSource !== isEnglishTarget)
+
+  const hasAnyTranslationProvider = Boolean(ENV.SUNBIRD_API_TOKEN || ENV.LOCAL_TRANSLATION_URL)
+
+  // Check local server connection (auto-run for local backend)
+  const checkServerConnection = React.useCallback(async (): Promise<"connected" | "error" | "unknown"> => {
+    if (backendMode !== "local") {
+      return "unknown"
+    }
+    try {
+      const isConnected = await localAPI.checkHealth(serverUrl)
+      if (isConnected) {
+        setServerStatus("connected")
+        return "connected"
+      }
+      setServerStatus("error")
+      return "error"
+    } catch {
+      setServerStatus("error")
+      return "error"
+    }
+  }, [backendMode, serverUrl])
+
+  React.useEffect(() => {
+    if (backendMode === "local") {
+      checkServerConnection()
+    }
+  }, [backendMode, checkServerConnection])
+
+  // Poll ASR progress while a transcription is running (long audio chunks)
+  React.useEffect(() => {
+    if (!isTranscribing) {
+      setTranscriptionProgress(null)
+      return
+    }
+    const id = setInterval(async () => {
+      const p = await localAPI.getProgress(serverUrl)
+      if (p) setTranscriptionProgress(p)
+    }, 1500)
+    return () => clearInterval(id)
+  }, [isTranscribing, serverUrl])
+
+  const handleLiveStart = () => {
+    setTranscription("")
+    setTranslation("")
+    setSegments([])
+  }
+
+  const handleLiveText = (text: string, segs: TranscriptionSegment[]) => {
+    setTranscription((prev) => (prev ? `${prev} ${text}` : text).trim())
+    setSegments((prev) => [...prev, ...segs])
+  }
+
+  React.useEffect(() => {
+    if (!enableTranslation) return
+    if (isEnglishSource) {
+      if (!LOCAL_TRANSLATION_LANGS.includes(targetLanguage)) {
+        setTargetLanguage(LOCAL_TRANSLATION_LANGS[0])
+      }
+    } else if (targetLanguage !== "eng") {
+      setTargetLanguage("eng")
+    }
+  }, [enableTranslation, isEnglishSource, targetLanguage])
+
+  // Redirect to login if not authenticated
+  React.useEffect(() => {
+    if (status === "unauthenticated") {
+      router.push("/login")
+    }
+  }, [status, router])
+
+  // Show loading while checking authentication
+  if (status === "loading") {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Don't render if not authenticated
+  if (!session) {
+    return null
+  }
+
+  const validateAndSetFile = (selectedFile: File | null) => {
+    if (!selectedFile) {
+      setFile(null)
+      setTranscription("")
+      setTranslation("")
+      return
+    }
+
+    const extension = selectedFile.name.split(".").pop()?.toLowerCase()
+    if (!extension || !ALL_SUPPORTED_FORMATS.includes(extension)) {
+      addToast({
+        title: "Unsupported format",
+        description: `Please upload: ${ALL_SUPPORTED_FORMATS.join(", ")}`,
+        type: "error",
+      })
+      return
+    }
+
+    // SunbirdAI has 10MB limit, local backend has 1024MB (1GB) limit
+    const maxSize = backendMode === "sunbird" ? 10 * 1024 * 1024 : 1024 * 1024 * 1024
+    if (selectedFile.size > maxSize) {
+      addToast({
+        title: "File too large",
+        description: `Maximum file size is ${backendMode === "sunbird" ? "10MB" : "1024MB (1GB)"}`,
+        type: "error",
+      })
+      return
+    }
+
+    // Check if video format is used with SunbirdAI (not supported)
+    if (backendMode === "sunbird" && SUPPORTED_VIDEO_FORMATS.includes(extension)) {
+      addToast({
+        title: "Video not supported",
+        description: "SunbirdAI only supports audio files (MP3, WAV, OGG, M4A, AAC). Please extract audio first.",
+        type: "error",
+      })
+      return
+    }
+
+    setFile(selectedFile)
+    setTranscription("")
+    setTranslation("")
+    addToast({ title: "File selected", description: selectedFile.name, type: "success" })
+  }
+
+  const handleTranscribe = async () => {
+    // URL mode validation
+    if (inputMode === "url") {
+      if (!videoUrl.trim()) {
+        addToast({ title: "No URL entered", description: "Please enter a video URL", type: "error" })
+        return
+      }
+      // URL mode only works with local backend (uses yt-dlp)
+      if (backendMode !== "local") {
+        addToast({
+          title: "URL mode unavailable",
+          description: "Set NEXT_PUBLIC_DEFAULT_BACKEND=local in .env.local for URL transcription",
+          type: "error",
+        })
+        return
+      }
+    } else if (inputMode === "microphone") {
+      // Microphone mode validation
+      if (!recordedAudio) {
+        addToast({ title: "No recording", description: "Please record audio first", type: "error" })
+        return
+      }
+    } else if (!file) {
+      addToast({ title: "No file selected", description: "Please upload an audio or video file", type: "error" })
+      return
+    }
+
+    // Validation based on backend mode
+    if (backendMode === "sunbird" && !ENV.SUNBIRD_API_TOKEN) {
+      addToast({
+        title: "Sunbird token missing",
+        description: "Set NEXT_PUBLIC_SUNBIRD_API_TOKEN in .env.local",
+        type: "error",
+      })
+      return
+    }
+
+    if (backendMode === "huggingface" && !ENV.HF_API_TOKEN) {
+      addToast({
+        title: "Hugging Face token missing",
+        description: "Set NEXT_PUBLIC_HF_API_TOKEN in .env.local",
+        type: "error",
+      })
+      return
+    }
+
+    if (backendMode === "local") {
+      let status = serverStatus
+      if (status === "unknown") {
+        status = await checkServerConnection()
+      }
+      if (status !== "connected") {
+        addToast({
+          title: "Local server unavailable",
+          description: "Start python backend/server.py --port 8100 (app runs on 3100) or update NEXT_PUBLIC_LOCAL_SERVER_URL",
+          type: "error",
+        })
+        return
+      }
+    }
+
+    setIsTranscribing(true)
+
+    try {
+      let text = ""
+      if (backendMode === "sunbird") {
+        const audioFile = inputMode === "microphone" ? recordedAudio! : file!
+        text = await sunbirdAPI.transcribe(audioFile, language)
+      } else if (backendMode === "huggingface") {
+        const audioFile = inputMode === "microphone" ? recordedAudio! : file!
+        text = await huggingFaceAPI.transcribe(audioFile)
+      } else {
+        // Local backend - check if URL, microphone, or file mode
+        if (inputMode === "url") {
+          const result = await localAPI.transcribeUrl(videoUrl, language, serverUrl, asrModel, separateSpeech, diarize)
+          text = result.text
+          setSegments(result.segments)
+        } else {
+          const audioFile = inputMode === "microphone" ? recordedAudio! : file!
+          const result = await localAPI.transcribe(audioFile, language, serverUrl, asrModel, separateSpeech, diarize)
+          text = result.text
+          setSegments(result.segments)
+        }
+      }
+      setTranscription(text)
+      addToast({ title: "Transcription complete", type: "success" })
+    } catch (error) {
+      console.error("Transcription error:", error)
+      addToast({
+        title: "Transcription failed",
+        description: error instanceof Error ? error.message : "Please try again",
+        type: "error",
+      })
+    } finally {
+      setIsTranscribing(false)
+    }
+  }
+
+  // Translate transcription to target language
+  const handleTranslate = async () => {
+    if (!transcription.trim()) {
+      addToast({ title: "No text to translate", description: "Please transcribe first", type: "error" })
+      return
+    }
+
+    if (!sourceSupported || language === "auto") {
+      addToast({
+        title: "Unsupported language",
+        description: "Pick a specific source language (English, Luganda, Acholi, Ateso, Lugbara, or Runyankole).",
+        type: "error",
+      })
+      return
+    }
+
+    if (!isValidSunbirdPair) {
+      addToast({
+        title: "Unsupported pair",
+        description: "Sunbird translation only supports English ↔ Ugandan language pairs.",
+        type: "error",
+      })
+      return
+    }
+
+    const canUseSunbird = Boolean(ENV.SUNBIRD_API_TOKEN)
+    const canUseLocalTranslation = Boolean(ENV.LOCAL_TRANSLATION_URL)
+
+    if (!canUseSunbird && !canUseLocalTranslation) {
+      addToast({
+        title: "Translation unavailable",
+        description: "Add NEXT_PUBLIC_SUNBIRD_API_TOKEN or NEXT_PUBLIC_LOCAL_TRANSLATION_URL in .env.local.",
+        type: "error",
+      })
+      return
+    }
+
+    setIsTranslating(true)
+    try {
+      let text = ""
+      // Prioritize local translation server when configured
+      if (canUseLocalTranslation) {
+        text = await localAPI.translate(transcription, language, targetLanguage)
+      } else {
+        text = await sunbirdAPI.translate(transcription, language, targetLanguage)
+      }
+      setTranslation(text)
+      addToast({ title: "Translation complete", type: "success" })
+    } catch (error) {
+      console.error("Translation error:", error)
+      addToast({
+        title: "Translation failed",
+        description: error instanceof Error ? error.message : "Please try again",
+        type: "error",
+      })
+    } finally {
+      setIsTranslating(false)
+    }
+  }
+
+  return (
+    <div className="min-h-screen">
+      <Header backendMode={backendMode} />
+
+      <main className="container mx-auto px-4 py-8">
+        <div className="mx-auto max-w-4xl space-y-6">
+          {/* Language Pills */}
+          <div className="flex flex-wrap justify-center gap-3">
+            {["Luganda", "Acholi", "Ateso", "Lugbara", "Runyankole", "Lusoga", "Rutooro", "Kinyarwanda", "Lumasaba", "English"].map((lang) => (
+              <span key={lang} className="rounded-full bg-primary/10 px-4 py-1.5 text-sm font-medium text-primary">
+                {lang}
+              </span>
+            ))}
+          </div>
+
+          <UploadCard
+            inputMode={inputMode}
+            setInputMode={setInputMode}
+            file={file}
+            setFile={validateAndSetFile} // Using wrapper to validate
+            videoUrl={videoUrl}
+            setVideoUrl={setVideoUrl}
+            language={language}
+            setLanguage={setLanguage}
+            enableTranslation={enableTranslation}
+            onTranslateToggle={setEnableTranslation}
+            onTranscribe={handleTranscribe}
+            isTranscribing={isTranscribing}
+            backendMode={backendMode}
+            asrModel={asrModel}
+            setAsrModel={setAsrModel}
+            recordedAudio={recordedAudio}
+            setRecordedAudio={setRecordedAudio}
+            serverUrl={serverUrl}
+            progress={transcriptionProgress}
+            onLiveStart={handleLiveStart}
+            onLiveText={handleLiveText}
+            hasAnyTranslationProvider={hasAnyTranslationProvider}
+            isValidSunbirdPair={isValidSunbirdPair}
+            separateSpeech={separateSpeech}
+            setSeparateSpeech={setSeparateSpeech}
+            diarize={diarize}
+            setDiarize={setDiarize}
+          />
+
+          {/* Transcription Result */}
+          {transcription && (
+            <TranscriptionCard
+              transcription={transcription}
+              segments={segments}
+              translation={translation}
+              setTranslation={setTranslation}
+              language={language}
+              targetLanguage={targetLanguage}
+              setTargetLanguage={setTargetLanguage}
+              enableTranslation={enableTranslation}
+              handleTranslate={handleTranslate}
+              isTranslating={isTranslating}
+              hasAnyTranslationProvider={hasAnyTranslationProvider}
+              isValidSunbirdPair={isValidSunbirdPair}
+            />
+          )}
+
+          <FeatureInfo />
+        </div>
+      </main>
+
+      <footer className="border-t py-6">
+        <div className="container mx-auto px-4 text-center text-sm text-muted-foreground">
+          VoiceBird - African Language Transcription
+        </div>
+      </footer>
+    </div>
+  )
+}
+
+export default function Home() {
+  return (
+    <ToastProvider>
+      <TranscriptionApp />
+    </ToastProvider>
+  )
+}

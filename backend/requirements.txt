@@ -1,0 +1,32 @@
+# VoiceBird Local ASR Server Requirements
+# Install: pip install -r requirements.txt
+
+# Web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6  # For file uploads
+python-dotenv>=1.0.0  # For loading .env files
+
+# ML/ASR
+torch>=2.0.0
+transformers>=4.36.0
+accelerate>=0.25.0
+
+# Audio processing (transformers will use these)
+librosa>=0.10.0
+soundfile>=0.12.0
+
+# Translation models
+# NLLB weights download automatically through transformers. For offline use,
+# run `huggingface-cli download facebook/nllb-200-distilled-1.3B --local-dir ./models/nllb`.
+
+# URL audio extraction (YouTube, TikTok, etc.)
+yt-dlp>=2024.1.0
+
+# Optional: for faster inference on CPU
+
+
+# Note: For GPU support, install PyTorch with CUDA:
+# pip install torch --index-url https://download.pytorch.org/whl/cu118
+# or
+# pip install torch --index-url https://download.pytorch.org/whl/cu121

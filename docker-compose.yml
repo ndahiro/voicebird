@@ -1,0 +1,166 @@
+services:
+  db:
+    image: mysql:8.0
+    command: --default-authentication-plugin=mysql_native_password
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: voicebird
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - voicebird-net
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  asr-service:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      args:
+        GPU: "1"  # Install CUDA-enabled PyTorch
+    command: python server.py --host 0.0.0.0 --port 8100
+    volumes:
+      - model_cache:/home/appuser/.cache/huggingface
+      - ./watch:/watch:rw  # Drop audio files here for auto-transcription (TXT/SRT/VTT written alongside)
+      - ./backend:/app  # Live code mount (same as translation-service): server.py changes apply on recreate
+    environment:
+      - ASR_DEVICE=cuda
+      # Backend: "transformers" (default, used for the Sunbird SALT fine-tune) or
+      # "faster-whisper" (Buzz's CTranslate2 backend, ~4-10x faster). NOTE: the
+      # SALT custom fine-tune can't run under faster-whisper — its CTranslate2
+      # conversion drops the 128-mel feature config, so transcription falls back
+      # to transformers automatically. Use faster-whisper for standard models
+      # (openai/whisper-large-v3, whisper-small, ...) to get the speedup; SALT
+      # stays on transformers regardless.
+      # Backend: "faster-whisper" (Buzz's CTranslate2 backend, ~4-10x faster)
+      # or "transformers" (slow sequential path, was the previous default).
+      # The Sunbird SALT fine-tune IS a standard Whisper large-v3 (num_mel_bins=128)
+      # and runs fine under faster-whisper ONCE the converted CT2 dir carries the
+      # 128-mel preprocessor_config.json — server.py:_copy_ct2_sidecar_configs now
+      # copies that (and the SALT tokenizer) during conversion, so SALT no longer
+      # falls back to the slow transformers backend.
+      - ASR_BACKEND=faster-whisper
+      # Buzz knobs (only used when ASR_BACKEND=faster-whisper):
+      # Concurrency for Buzz's BatchedInferencePipeline (chunks decoded together
+      # on the GPU). 16 is a good default for an 8GB card; lower to 8 if VRAM-tight.
+      - FASTER_WHISPER_BATCH_SIZE=16
+      # int8_float16 saves VRAM and is faster than float16 on most GPUs; set to
+      # "float16" if you prefer max accuracy over speed.
+      - FASTER_WHISPER_COMPUTE_TYPE=int8_float16
+      # Speech separation on CPU: the 8GB card is fully needed by Whisper-large
+      # (fp16 + decode). demucs on GPU made the ASR container OOM (500).
+      - SPEECH_SEPARATION_DEVICE=cpu
+      # Speaker identification (pyannote) — label transcript segments SPEAKER_00, ....
+      # Requires the HF_TOKEN account to have accepted the gated models
+      # pyannote/speaker-diarization-3.1 AND pyannote/segmentation-3.0.
+      # Runs on CPU (the GPU is reserved for Whisper); degrades gracefully
+      # (transcription proceeds without labels) if the models are unavailable.
+      - DIARIZATION=true
+      - DIARIZATION_DEVICE=cpu
+      # Return freed segments to the driver instead of pinning the whole card;
+      # prevents CUDA OOM / fragmentation on the ASR service.
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - HF_TOKEN=${HF_TOKEN}
+      - DATABASE_URL=mysql://user:password@db:3306/voicebird
+      - MAX_FILE_SIZE_MB=1024
+      - WATCH_FOLDER=/watch
+      - WATCH_OUTPUT_FORMATS=txt,srt,vtt
+    ports:
+      - "8100:8100"
+    networks:
+      - voicebird-net
+    depends_on:
+      db:
+        condition: service_healthy
+    # Allocate a free GPU (GPU 6; GPUs 0-5 are used by other workloads)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ "6" ]
+              capabilities: [ gpu ]
+
+  translation-service:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      args:
+        GPU: "1"  # Install CUDA-enabled PyTorch for GPU translation
+    command: python translation_server.py --host 0.0.0.0 --port 8200
+    volumes:
+      - model_cache:/home/appuser/.cache/huggingface
+      - ./backend:/app
+    environment:
+      # Sunbird SALT fine-tune on full NLLB-200-3.3B: trained for the five Ugandan languages
+      # + Swahili/Lusoga/Rutooro, retains NLLB-200's other languages for the rest. Not gated on
+      # Hugging Face (license CC-BY-NC-4.0, non-commercial). TRANSLATION_FALLBACK_MODEL_ID is a
+      # safety net; with the 3.3B model the primary serves all supported pairs.
+      - TRANSLATION_MODEL_ID=${TRANSLATION_MODEL_ID:-Sunbird/translate-nllb-3.3b-salt}
+      - TRANSLATION_DEVICE=${TRANSLATION_DEVICE:-cuda} # GPU: fast beam-search; set to cpu if no GPU is allocated
+      - TRANSLATION_NUM_BEAMS=${TRANSLATION_NUM_BEAMS:-4} # Beam search (vs greedy=1) improves accuracy a lot
+      - TRANSLATION_MAX_NEW_TOKENS=${TRANSLATION_MAX_NEW_TOKENS:-192}
+      - TRANSLATION_PRELOAD_MODEL=${TRANSLATION_PRELOAD_MODEL:-true}
+      # Same allocator setting as the ASR service: avoid fragmentation on the 8GB card.
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - HF_TOKEN=${HF_TOKEN}
+      - DATABASE_URL=mysql://user:password@db:3306/voicebird
+    ports:
+      - "8200:8200"
+    networks:
+      - voicebird-net
+    depends_on:
+      db:
+        condition: service_healthy
+    # GPU 7 is free; GPUs 0-3 (vLLM workers), 4 (vLLM core), 5 (ollama), 6 (ASR) are in use.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ "7" ]
+              capabilities: [ gpu ]
+
+  frontend:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        NEXT_PUBLIC_LOCAL_SERVER_URL: http://192.168.0.5:8100
+        NEXT_PUBLIC_LOCAL_TRANSLATION_URL: http://192.168.0.5:8200
+        NEXT_PUBLIC_DEFAULT_BACKEND: local
+    environment:
+      - DATABASE_URL=mysql://user:password@db:3306/voicebird
+      - NEXTAUTH_URL=http://192.168.0.5:3100 # LAN IP so NextAuth callbacks work when accessed from the LAN
+      - NEXTAUTH_SECRET=changeme_in_production
+      - NEXT_PUBLIC_LOCAL_SERVER_URL=http://192.168.0.5:8100 # Client-side: reachable from browser on LAN
+      - NEXT_PUBLIC_LOCAL_TRANSLATION_URL=http://192.168.0.5:8200 # Client-side: reachable from browser on LAN
+      - NEXT_PUBLIC_DEFAULT_BACKEND=local
+    ports:
+      - "3100:3000"
+    networks:
+      - voicebird-net
+    depends_on:
+      - asr-service
+      - translation-service
+      - db
+
+networks:
+  voicebird-net:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  model_cache:
+    name: voicebird_model_cache

@@ -1,0 +1,28 @@
+node_modules
+# Keep environment variables out of version control
+.env
+.env.local
+
+# Next.js build output
+.next
+out
+
+# Tool-generated directories
+.genkit
+.qoder
+.antigravity
+
+# Prisma generated client
+/lib/generated/prisma
+
+# Python virtual environment
+backend/venv
+__pycache__/
+**/*.pyc
+
+# TypeScript incremental build cache
+tsconfig.tsbuildinfo
+
+# OS files
+.DS_Store
+Thumbs.db

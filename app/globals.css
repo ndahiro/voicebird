@@ -1,0 +1,93 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 35 30% 97%;
+    --foreground: 25 30% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 25 30% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 25 30% 12%;
+    --primary: 25 95% 53%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 35 50% 92%;
+    --secondary-foreground: 25 30% 20%;
+    --muted: 35 30% 92%;
+    --muted-foreground: 25 15% 45%;
+    --accent: 45 93% 47%;
+    --accent-foreground: 25 30% 12%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 35 25% 88%;
+    --input: 35 25% 88%;
+    --ring: 25 95% 53%;
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    --background: 25 25% 8%;
+    --foreground: 35 30% 95%;
+    --card: 25 20% 12%;
+    --card-foreground: 35 30% 95%;
+    --popover: 25 20% 12%;
+    --popover-foreground: 35 30% 95%;
+    --primary: 25 95% 55%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 25 20% 18%;
+    --secondary-foreground: 35 30% 95%;
+    --muted: 25 20% 18%;
+    --muted-foreground: 35 20% 60%;
+    --accent: 45 93% 50%;
+    --accent-foreground: 25 30% 12%;
+    --destructive: 0 70% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 25 20% 20%;
+    --input: 25 20% 20%;
+    --ring: 25 95% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+@layer components {
+  .upload-zone {
+    @apply border-2 border-dashed border-primary/30 rounded-xl p-8 transition-all duration-300 cursor-pointer;
+    background: linear-gradient(180deg, hsl(var(--primary) / 0.03) 0%, hsl(var(--primary) / 0.08) 100%);
+  }
+  
+  .upload-zone:hover {
+    @apply border-primary/50;
+  }
+  
+  .upload-zone.dragging {
+    @apply border-primary bg-primary/10 scale-[1.02];
+  }
+  
+  .waveform-bar {
+    @apply bg-primary rounded-full;
+    animation: waveform 1s ease-in-out infinite;
+  }
+  
+  @keyframes waveform {
+    0%, 100% { transform: scaleY(0.3); }
+    50% { transform: scaleY(1); }
+  }
+  
+  .float {
+    animation: float 3s ease-in-out infinite;
+  }
+  
+  @keyframes float {
+    0%, 100% { transform: translateY(0px); }
+    50% { transform: translateY(-10px); }
+  }
+}

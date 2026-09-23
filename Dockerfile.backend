@@ -1,0 +1,55 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Set to 1 to install CUDA-enabled PyTorch (for GPU inference)
+ARG GPU=0
+ENV GPU=${GPU}
+
+# Install system dependencies
+# ffmpeg is required for audio processing
+# git is required for some pip packages
+# curl is useful for healthchecks
+# build-essential: newer torch versions JIT-compile Triton kernels at runtime
+# (e.g. whisper word-timestamp extraction), which needs a C compiler present.
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    git \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first to leverage cache
+# GPU builds install CUDA-enabled torch, otherwise CPU-only requirements are used
+COPY backend/requirements*.txt ./
+
+# Install Python dependencies
+# A BuildKit cache mount keeps pip's download cache across rebuilds, so
+# interrupted builds (e.g. large CUDA torch wheels) resume instead of
+# re-downloading from scratch.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip && \
+    if [ "$GPU" = "1" ] && [ -f requirements-gpu.txt ]; then \
+      pip install -r requirements-gpu.txt; \
+    elif [ -f requirements-cpu.txt ]; then \
+      pip install -r requirements-cpu.txt; \
+    else \
+      pip install -r requirements.txt; \
+    fi
+
+# Copy backend code
+COPY backend/ .
+COPY .env.example .env
+
+# Create non-root user for security
+RUN useradd -m appuser && \
+    chown -R appuser:appuser /app && \
+    mkdir -p /home/appuser/.cache/huggingface && \
+    chown -R appuser:appuser /home/appuser/.cache
+USER appuser
+
+# Expose ports (although only one will be used per container)
+EXPOSE 8100 8200
+
+# Default command (can be overridden in docker-compose)
+CMD ["python", "server.py"]

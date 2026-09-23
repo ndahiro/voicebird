@@ -1,0 +1,52 @@
+# VoiceBird Local ASR Server Requirements (CPU-Only)
+# Install: pip install -r requirements-cpu.txt
+
+# Web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6  # For file uploads
+python-dotenv>=1.0.0  # For loading .env files
+
+# ML/ASR - CPU-only PyTorch
+--index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://pypi.org/simple
+torch>=2.6.0
+torchvision
+torchaudio
+transformers>=4.36.0
+accelerate>=0.25.0
+
+# Audio processing (transformers will use these)
+librosa>=0.10.0
+soundfile>=0.12.0
+
+# Optional faster-whisper (CTranslate2) backend — ~4x faster inference
+# Enable with ASR_BACKEND=faster-whisper
+faster-whisper>=1.0.0
+
+# Optional speech separation (demucs) — separates the vocals stem before
+# transcription for better accuracy on noisy audio (borrowed from Buzz)
+demucs>=4.0.0
+
+# Optional speaker identification (pyannote.audio) — labels transcript segments
+# with speakers (SPEAKER_00, ...). Models are gated on Hugging Face: accept the
+# terms at https://huggingface.co/pyannote/speaker-diarization-3.1 and
+# https://huggingface.co/pyannote/segmentation-3.0 with the HF token
+# Keep >= 4.0 (see requirements-gpu.txt for the pyannote 4.x rationale).
+pyannote.audio>=4.0
+
+# Translation models
+# NLLB tokenizer requires sentencepiece
+sentencepiece>=0.1.99
+protobuf>=3.20.0
+# NLLB weights download automatically through transformers. For offline use,
+# run `huggingface-cli download facebook/nllb-200-distilled-1.3B --local-dir ./models/nllb`.
+
+# URL audio extraction (YouTube, TikTok, etc.)
+yt-dlp>=2024.1.0
+
+# Optional: for faster inference on CPU
+
+# Database
+pymysql>=1.1.0
+cryptography>=41.0.0

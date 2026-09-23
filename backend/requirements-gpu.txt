@@ -1,0 +1,52 @@
+# VoiceBird Local ASR Server Requirements (GPU)
+# Install: pip install -r requirements-gpu.txt
+# Same as requirements-cpu.txt but with CUDA-enabled PyTorch (cu126).
+
+# Web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6  # For file uploads
+python-dotenv>=1.0.0  # For loading .env files
+
+# ML/ASR - CUDA-enabled PyTorch
+--index-url https://download.pytorch.org/whl/cu126
+--extra-index-url https://pypi.org/simple
+torch>=2.6.0
+torchvision
+torchaudio
+transformers>=4.36.0
+accelerate>=0.25.0
+
+# Audio processing (transformers will use these)
+librosa>=0.10.0
+soundfile>=0.12.0
+
+# Optional faster-whisper (CTranslate2) backend — ~4x faster inference
+# Enable with ASR_BACKEND=faster-whisper
+faster-whisper>=1.0.0
+
+# Optional speech separation (demucs) — separates the vocals stem before
+# transcription for better accuracy on noisy audio (borrowed from Buzz)
+demucs>=4.0.0
+
+# Optional speaker identification (pyannote.audio) — labels transcript segments
+# with speakers (SPEAKER_00, ...). Models are gated on Hugging Face: accept the
+# terms at https://huggingface.co/pyannote/speaker-diarization-3.1 and
+# https://huggingface.co/pyannote/segmentation-3.0 with the HF token.
+# Keep >= 4.0 (not pinned down): 4.x matches modern torchaudio, and the gated
+# community-1 PLDA that 4.x tries to fetch by default is handled by a graceful
+# shim in server.py (_install_pyannote_plda_shim) — 3.x would crash on import
+# with current torchaudio (no set_audio_backend / AudioMetaData).
+pyannote.audio>=4.0
+
+# Translation models
+# NLLB tokenizer requires sentencepiece
+sentencepiece>=0.1.99
+protobuf>=3.20.0
+
+# URL audio extraction (YouTube, TikTok, etc.)
+yt-dlp>=2024.1.0
+
+# Database
+pymysql>=1.1.0
+cryptography>=41.0.0
