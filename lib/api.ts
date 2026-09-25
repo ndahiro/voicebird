@@ -3,8 +3,7 @@
  *
  * Three backends are supported (see lib/config.ts DEFAULT_BACKEND):
  * - localAPI:       self-hosted ASR (:8100) and translation (:8200) services
- * - sunbirdAPI:     SunbirdAI cloud API
- * - huggingFaceAPI: Hugging Face inference API
+ * - huggingFaceAPI: Hugging Face inference API (optional, for ASR only)
  *
  * All functions return normalized TranscriptionResult / translation strings so
  * the UI components don't care which backend produced them.
@@ -65,71 +64,6 @@ const validateResponse = async (response: Response, errorMessage: string) => {
             detail = err.detail || err.error || ""
         } catch { } // ignore json parse error
         throw new TranscriptionError(`${errorMessage} (${response.status}) ${detail}`, response.status)
-    }
-}
-
-export const sunbirdAPI = {
-    transcribe: async (file: File, language: string) => {
-        const token = ENV.SUNBIRD_API_TOKEN.trim()
-        if (!token) throw new Error("Sunbird token missing")
-
-        const formData = new FormData()
-        formData.append("audio", file)
-        if (language !== "auto") {
-            formData.append("language", language)
-            formData.append("adapter", language)
-        }
-
-        const response = await fetch(`${ENV.SUNBIRD_API_URL}/tasks/stt`, {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${token}` },
-            body: formData,
-        })
-
-        await validateResponse(response, "Sunbird API failed")
-
-        const data = await response.json()
-        const text = typeof data === 'string'
-            ? data
-            : data.audio_transcription || data.text || "No transcription"
-
-        if (typeof text !== 'string') {
-            console.error('STT response:', data)
-            throw new Error('Unexpected response format from API')
-        }
-        return text
-    },
-
-    translate: async (text: string, sourceLang: string, targetLang: string) => {
-        const token = ENV.SUNBIRD_API_TOKEN.trim()
-        if (!token) throw new Error("SunbirdAI token required")
-
-        const response = await fetch(`${ENV.SUNBIRD_API_URL}/tasks/translate`, {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${token}`,
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                source_language: sourceLang,
-                target_language: targetLang,
-                text,
-            }),
-        })
-
-        await validateResponse(response, "Sunbird translation failed")
-
-        const data = await response.json()
-        const translatedText =
-            typeof data === "string"
-                ? data
-                : data?.text || data?.translation || data?.translated_text
-
-        if (!translatedText || typeof translatedText !== "string") {
-            console.error("Sunbird translation response:", data)
-            throw new Error("Unexpected response from Sunbird translation API")
-        }
-        return translatedText
     }
 }
 

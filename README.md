@@ -19,7 +19,7 @@ components/
                         TranscriptionCard, FeatureInfo
   ui/                   Shared primitives (button, card, toast, select)
 lib/
-  api.ts                Backend clients: local ASR/OCR/translation, Sunbird cloud, Hugging Face
+  api.ts                Backend clients: local ASR/OCR/translation, Hugging Face (optional cloud ASR)
   filesave.ts           Save transcript text with the media's name (Downloads by default; optional folder)
   config.ts             Env vars, supported languages, model list
   types.ts              Shared TypeScript types
@@ -107,9 +107,9 @@ npm start
 |----------|---------|
 | `NEXT_PUBLIC_LOCAL_SERVER_URL` | Local ASR server URL (default `http://localhost:8100`) |
 | `NEXT_PUBLIC_LOCAL_TRANSLATION_URL` | Local translation server URL (default `http://localhost:8200`) |
-| `NEXT_PUBLIC_DEFAULT_BACKEND` | `local` (default), `sunbird`, or `huggingface` |
-| `NEXT_PUBLIC_SUNBIRD_API_URL` / `NEXT_PUBLIC_SUNBIRD_API_TOKEN` | SunbirdAI cloud API (optional cloud mode) |
-| `NEXT_PUBLIC_HF_API_TOKEN` / `NEXT_PUBLIC_HF_ASR_MODEL` | Hugging Face cloud inference (optional) |
+| `NEXT_PUBLIC_DEFAULT_BACKEND` | `local` (default, self-hosted services) or `huggingface` (cloud ASR); any other value falls back to `local` |
+| `HF_TOKEN` | Hugging Face token for downloading the gated models that run locally (Sunbird ASR, pyannote diarization); public models need none |
+| `NEXT_PUBLIC_HF_API_TOKEN` / `NEXT_PUBLIC_HF_ASR_MODEL` | Optional Hugging Face cloud ASR, only used with `NEXT_PUBLIC_DEFAULT_BACKEND=huggingface` |
 | `NEXTAUTH_URL` / `NEXTAUTH_SECRET` | NextAuth.js session config |
 | `NEXT_PUBLIC_SESSION_IDLE_TIMEOUT_MINUTES` | Idle minutes before the user must sign in again (default `30`). The session slides forward while the user is active; after this much inactivity the token expires and the open tab signs out to `/login?reason=idle` |
 

@@ -14,11 +14,10 @@ import {
   SUPPORTED_VIDEO_FORMATS,
   SUPPORTED_IMAGE_FORMATS,
   ALL_UPLOAD_FORMATS,
-  SUNBIRD_TRANSLATION_CODES,
   LOCAL_TRANSLATION_LANGS,
   DEFAULT_ASR_MODEL
 } from "@/lib/config"
-import { sunbirdAPI, huggingFaceAPI, localAPI, type TranscriptionSegment, type TranscriptionProgress } from "@/lib/api"
+import { huggingFaceAPI, localAPI, type TranscriptionSegment, type TranscriptionProgress } from "@/lib/api"
 
 import { Header } from "@/components/voicebird/Header"
 import { UploadCard } from "@/components/voicebird/UploadCard"
@@ -132,20 +131,16 @@ function TranscriptionApp() {
   const isEnglishSource = language === "eng"
   const isEnglishTarget = targetLanguage === "eng"
 
-  // Use extended language list for local backend
-  const supportedCodes = backendMode === "local"
-    ? [...LOCAL_TRANSLATION_LANGS, "eng"]
-    : SUNBIRD_TRANSLATION_CODES
+  // The local translation service is the only provider, so it accepts its full
+  // language set (any pair among the supported codes).
+  const supportedCodes = [...LOCAL_TRANSLATION_LANGS, "eng"]
 
   const sourceSupported = supportedCodes.includes(language)
   const targetSupported = supportedCodes.includes(targetLanguage)
 
-  // Allow any supported pair for local backend
-  const isValidSunbirdPair = backendMode === "local"
-    ? (sourceSupported && targetSupported)
-    : (sourceSupported && targetSupported && isEnglishSource !== isEnglishTarget)
+  const isValidTranslationPair = sourceSupported && targetSupported
 
-  const hasAnyTranslationProvider = Boolean(ENV.SUNBIRD_API_TOKEN || ENV.LOCAL_TRANSLATION_URL)
+  const hasAnyTranslationProvider = Boolean(ENV.LOCAL_TRANSLATION_URL)
 
   // Name shared by the audio/video and its saved text: "interview.mp3" ->
   // interview.txt / interview.srt / interview.translation.txt, so the text is
@@ -326,22 +321,12 @@ function TranscriptionApp() {
       return
     }
 
-    // SunbirdAI has 10MB limit, local backend has 1024MB (1GB) limit
-    const maxSize = backendMode === "sunbird" ? 10 * 1024 * 1024 : 1024 * 1024 * 1024
+    // The self-hosted ASR service accepts up to 1024MB (1GB) per upload.
+    const maxSize = 1024 * 1024 * 1024
     if (selectedFile.size > maxSize) {
       addToast({
         title: "File too large",
-        description: `Maximum file size is ${backendMode === "sunbird" ? "10MB" : "1024MB (1GB)"}`,
-        type: "error",
-      })
-      return
-    }
-
-    // Check if video format is used with SunbirdAI (not supported)
-    if (backendMode === "sunbird" && SUPPORTED_VIDEO_FORMATS.includes(extension)) {
-      addToast({
-        title: "Video not supported",
-        description: "SunbirdAI only supports audio files (MP3, WAV, OGG, M4A, AAC). Please extract audio first.",
+        description: "Maximum file size is 1024MB (1GB)",
         type: "error",
       })
       return
@@ -383,15 +368,6 @@ function TranscriptionApp() {
     }
 
     // Validation based on backend mode
-    if (backendMode === "sunbird" && !ENV.SUNBIRD_API_TOKEN) {
-      addToast({
-        title: "Sunbird token missing",
-        description: "Set NEXT_PUBLIC_SUNBIRD_API_TOKEN in .env.local",
-        type: "error",
-      })
-      return
-    }
-
     if (backendMode === "huggingface" && !ENV.HF_API_TOKEN) {
       addToast({
         title: "Hugging Face token missing",
@@ -426,10 +402,7 @@ function TranscriptionApp() {
       const imageOnly = backendMode === "local" && isImageMedia(mediaForOcr)
 
       let text = ""
-      if (!imageOnly && backendMode === "sunbird") {
-        const audioFile = inputMode === "microphone" ? recordedAudio! : file!
-        text = await sunbirdAPI.transcribe(audioFile, language)
-      } else if (!imageOnly && backendMode === "huggingface") {
+      if (!imageOnly && backendMode === "huggingface") {
         const audioFile = inputMode === "microphone" ? recordedAudio! : file!
         text = await huggingFaceAPI.transcribe(audioFile)
       } else if (!imageOnly) {
@@ -507,22 +480,19 @@ function TranscriptionApp() {
       return false
     }
 
-    if (!isValidSunbirdPair) {
+    if (!isValidTranslationPair) {
       addToast({
         title: "Unsupported pair",
-        description: "Sunbird translation only supports English ↔ Ugandan language pairs.",
+        description: "Pick a source and target language from the supported list.",
         type: "error",
       })
       return false
     }
 
-    const canUseSunbird = Boolean(ENV.SUNBIRD_API_TOKEN)
-    const canUseLocalTranslation = Boolean(ENV.LOCAL_TRANSLATION_URL)
-
-    if (!canUseSunbird && !canUseLocalTranslation) {
+    if (!ENV.LOCAL_TRANSLATION_URL) {
       addToast({
         title: "Translation unavailable",
-        description: "Add NEXT_PUBLIC_SUNBIRD_API_TOKEN or NEXT_PUBLIC_LOCAL_TRANSLATION_URL in .env.local.",
+        description: "Set NEXT_PUBLIC_LOCAL_TRANSLATION_URL in .env.local to use the local translation server.",
         type: "error",
       })
       return false
@@ -531,12 +501,10 @@ function TranscriptionApp() {
     return true
   }
 
-  // Local translation server is preferred when configured; Sunbird is the fallback.
+  // Translation always goes to the self-hosted translation server — there is no
+  // cloud fallback that could silently receive the text.
   const runTranslation = async (text: string): Promise<string> => {
-    if (ENV.LOCAL_TRANSLATION_URL) {
-      return localAPI.translate(text, language, targetLanguage)
-    }
-    return sunbirdAPI.translate(text, language, targetLanguage)
+    return localAPI.translate(text, language, targetLanguage)
   }
 
   // Translate transcription to target language
@@ -646,7 +614,7 @@ function TranscriptionApp() {
             onLiveStart={handleLiveStart}
             onLiveText={handleLiveText}
             hasAnyTranslationProvider={hasAnyTranslationProvider}
-            isValidSunbirdPair={isValidSunbirdPair}
+            isValidTranslationPair={isValidTranslationPair}
             separateSpeech={separateSpeech}
             setSeparateSpeech={setSeparateSpeech}
             diarize={diarize}
@@ -670,7 +638,7 @@ function TranscriptionApp() {
               handleTranslate={handleTranslate}
               isTranslating={isTranslating}
               hasAnyTranslationProvider={hasAnyTranslationProvider}
-              isValidSunbirdPair={isValidSunbirdPair}
+              isValidTranslationPair={isValidTranslationPair}
               mediaBaseName={mediaBaseName}
               ocrText={ocrText}
               ocrTranslation={ocrTranslation}

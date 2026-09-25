@@ -30,7 +30,7 @@ interface TranscriptionCardProps {
     handleTranslate: () => void
     isTranslating: boolean
     hasAnyTranslationProvider: boolean
-    isValidSunbirdPair: boolean
+    isValidTranslationPair: boolean
     segments?: TranscriptionSegment[]
     /** Name of the audio/video (without extension) — saved text uses it. */
     mediaBaseName: string
@@ -53,7 +53,7 @@ export function TranscriptionCard({
     handleTranslate,
     isTranslating,
     hasAnyTranslationProvider,
-    isValidSunbirdPair,
+    isValidTranslationPair,
     segments = [],
     mediaBaseName,
     ocrText = "",
@@ -126,7 +126,7 @@ export function TranscriptionCard({
         Boolean(ocrText.trim()) &&
         language !== "auto" &&
         hasAnyTranslationProvider &&
-        isValidSunbirdPair
+        isValidTranslationPair
 
     const toTimestamp = (seconds: number, msSeparator = ".") => {
         const ms = Math.max(0, seconds) * 1000
@@ -306,13 +306,13 @@ export function TranscriptionCard({
                         ) : !hasAnyTranslationProvider ? (
                             <div className="rounded-lg bg-yellow-50 dark:bg-yellow-950/20 border border-yellow-200 dark:border-yellow-900 p-4">
                                 <p className="text-sm text-yellow-800 dark:text-yellow-200">
-                                    <strong>Translation unavailable:</strong> Configure NEXT_PUBLIC_SUNBIRD_API_TOKEN or NEXT_PUBLIC_LOCAL_TRANSLATION_URL in your .env file.
+                                    <strong>Translation unavailable:</strong> Set NEXT_PUBLIC_LOCAL_TRANSLATION_URL in your .env file to use the local translation server.
                                 </p>
                             </div>
-                        ) : !isValidSunbirdPair ? (
+                        ) : !isValidTranslationPair ? (
                             <div className="rounded-lg bg-yellow-50 dark:bg-yellow-950/20 border border-yellow-200 dark:border-yellow-900 p-4">
                                 <p className="text-sm text-yellow-800 dark:text-yellow-200">
-                                    <strong>Translation unavailable:</strong> Translation only supports English ↔ African language pairs (Luganda, Acholi, Ateso, Lugbara, Runyankole, Lusoga, Rutooro, Kinyarwanda, Lumasaba).
+                                    <strong>Translation unavailable:</strong> Pick a source and target language from the supported list.
                                 </p>
                             </div>
                         ) : !translation ? (

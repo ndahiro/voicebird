@@ -1,6 +1,6 @@
 "use client"
 
-import { Bird, Cloud, Sparkles, LogOut, User } from "lucide-react"
+import { Bird, Sparkles, LogOut, User } from "lucide-react"
 import { useSession, signOut } from "next-auth/react"
 import { BackendMode } from "@/lib/types"
 import { Button } from "@/components/ui/button"
@@ -28,7 +28,6 @@ export function Header({ backendMode }: HeaderProps) {
                     </div>
                     <div className="flex items-center gap-4">
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                            {backendMode === "sunbird" && <><Cloud className="h-4 w-4" /><span>SunbirdAI</span></>}
                             {backendMode === "huggingface" && <><Sparkles className="h-4 w-4" /><span>Hugging Face</span></>}
                             {backendMode === "local" && <><Bird className="h-4 w-4" /><span>Local</span></>}
                         </div>

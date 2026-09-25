@@ -45,7 +45,7 @@ interface UploadCardProps {
     onLiveStart: () => void
     onLiveText: (text: string, segments: TranscriptionSegment[]) => void
     hasAnyTranslationProvider: boolean
-    isValidSunbirdPair: boolean
+    isValidTranslationPair: boolean
     separateSpeech: boolean
     setSeparateSpeech: (on: boolean) => void
     diarize: boolean
@@ -77,7 +77,7 @@ export function UploadCard({
     onLiveStart,
     onLiveText,
     hasAnyTranslationProvider,
-    isValidSunbirdPair,
+    isValidTranslationPair,
     separateSpeech,
     setSeparateSpeech,
     diarize,
@@ -86,12 +86,12 @@ export function UploadCard({
     setOcrEnabled
 }: UploadCardProps) {
     const translationUnavailable =
-        language === "auto" || !hasAnyTranslationProvider || !isValidSunbirdPair
+        language === "auto" || !hasAnyTranslationProvider || !isValidTranslationPair
     const translationUnavailableHint =
         language === "auto"
             ? "Select a source language (not Auto Detect) to enable translation."
             : !hasAnyTranslationProvider
-            ? "Translation is unavailable — no translation service is configured. Add NEXT_PUBLIC_SUNBIRD_API_TOKEN or NEXT_PUBLIC_LOCAL_TRANSLATION_URL to your .env file."
+            ? "Translation is unavailable — the local translation server isn't configured. Set NEXT_PUBLIC_LOCAL_TRANSLATION_URL in your .env file."
             : "Translation only supports English ↔ African language pairs."
     const fileInputRef = React.useRef<HTMLInputElement>(null)
     const [isDragging, setIsDragging] = React.useState(false)

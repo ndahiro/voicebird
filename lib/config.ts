@@ -3,8 +3,6 @@ import { BackendMode, Language } from "./types"
 // Environment variables - accessed directly for Next.js compatibility
 // These are replaced at build time by Next.js
 export const ENV = {
-    SUNBIRD_API_URL: process.env.NEXT_PUBLIC_SUNBIRD_API_URL || "https://api.sunbird.ai",
-    SUNBIRD_API_TOKEN: process.env.NEXT_PUBLIC_SUNBIRD_API_TOKEN || "",
     HF_API_TOKEN: process.env.NEXT_PUBLIC_HF_API_TOKEN || "",
     HF_ASR_MODEL: process.env.NEXT_PUBLIC_HF_ASR_MODEL || "Sunbird/sunbird-mms",
     LOCAL_SERVER_URL: process.env.NEXT_PUBLIC_LOCAL_SERVER_URL || "http://localhost:8100",
@@ -16,10 +14,11 @@ export const ENV = {
 }
 
 export const resolveBackendMode = (value: string): BackendMode => {
-    if (value === "sunbird" || value === "huggingface" || value === "local") {
+    if (value === "huggingface" || value === "local") {
         return value
     }
-    // Safe fallback: local avoids external API dependency failures by default.
+    // Everything else (including the retired "sunbird" cloud mode) falls back to
+    // the local services, so no configuration can route audio to a cloud API.
     return "local"
 }
 
@@ -56,7 +55,6 @@ export const ALL_SUPPORTED_FORMATS = [...SUPPORTED_AUDIO_FORMATS, ...SUPPORTED_V
 // then translated) and handled by the local backend.
 export const SUPPORTED_IMAGE_FORMATS = ["jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff"]
 export const ALL_UPLOAD_FORMATS = [...ALL_SUPPORTED_FORMATS, ...SUPPORTED_IMAGE_FORMATS]
-export const SUNBIRD_TRANSLATION_CODES = ["lug", "ach", "teo", "lgg", "nyn", "eng"]
 export const LOCAL_TRANSLATION_LANGS = ["lug", "ach", "teo", "lgg", "nyn", "fra", "swa", "ara", "spa", "deu", "zho", "hin", "rus", "por", "ita"]
 
 export const ASR_MODELS = [
