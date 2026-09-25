@@ -109,7 +109,8 @@ services:
       - TRANSLATION_MODEL_ID=${TRANSLATION_MODEL_ID:-Sunbird/translate-nllb-3.3b-salt}
       - TRANSLATION_DEVICE=${TRANSLATION_DEVICE:-cuda} # GPU: fast beam-search; set to cpu if no GPU is allocated
       - TRANSLATION_NUM_BEAMS=${TRANSLATION_NUM_BEAMS:-4} # Beam search (vs greedy=1) improves accuracy a lot
-      - TRANSLATION_MAX_NEW_TOKENS=${TRANSLATION_MAX_NEW_TOKENS:-192}
+      - TRANSLATION_MAX_NEW_TOKENS=${TRANSLATION_MAX_NEW_TOKENS:-512} # Output cap per chunk (long chunks are re-split and retried, never dropped)
+      - TRANSLATION_MAX_SPLIT_DEPTH=${TRANSLATION_MAX_SPLIT_DEPTH:-6} # How many times a chunk may be halved when it hits that cap
       - TRANSLATION_PRELOAD_MODEL=${TRANSLATION_PRELOAD_MODEL:-true}
       # Same allocator setting as the ASR service: avoid fragmentation on the 8GB card.
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -140,6 +141,7 @@ services:
         NEXT_PUBLIC_LOCAL_SERVER_URL: http://192.168.0.5:8100
         NEXT_PUBLIC_LOCAL_TRANSLATION_URL: http://192.168.0.5:8200
         NEXT_PUBLIC_DEFAULT_BACKEND: local
+        NEXT_PUBLIC_SESSION_IDLE_TIMEOUT_MINUTES: 30 # Idle minutes before the user must sign in again
     environment:
       - DATABASE_URL=mysql://user:password@db:3306/voicebird
       - NEXTAUTH_URL=http://192.168.0.5:3100 # LAN IP so NextAuth callbacks work when accessed from the LAN
@@ -147,6 +149,7 @@ services:
       - NEXT_PUBLIC_LOCAL_SERVER_URL=http://192.168.0.5:8100 # Client-side: reachable from browser on LAN
       - NEXT_PUBLIC_LOCAL_TRANSLATION_URL=http://192.168.0.5:8200 # Client-side: reachable from browser on LAN
       - NEXT_PUBLIC_DEFAULT_BACKEND=local
+      - NEXT_PUBLIC_SESSION_IDLE_TIMEOUT_MINUTES=30 # Idle minutes before the user must sign in again
     ports:
       - "3100:3000"
     networks:

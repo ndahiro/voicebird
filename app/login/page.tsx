@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { signIn } from "next-auth/react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
@@ -13,6 +13,12 @@ export default function LoginPage() {
     const [password, setPassword] = useState("")
     const [error, setError] = useState("")
     const [isLoading, setIsLoading] = useState(false)
+    const [idleNotice, setIdleNotice] = useState(false)
+
+    // The app redirects here with ?reason=idle after signing an inactive user out.
+    useEffect(() => {
+        setIdleNotice(new URLSearchParams(window.location.search).get("reason") === "idle")
+    }, [])
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
@@ -48,6 +54,12 @@ export default function LoginPage() {
                 </div>
 
                 <form onSubmit={handleSubmit} className="space-y-4">
+                    {idleNotice && (
+                        <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded">
+                            You were signed out after a period of inactivity. Please sign in again.
+                        </div>
+                    )}
+
                     {error && (
                         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
                             {error}

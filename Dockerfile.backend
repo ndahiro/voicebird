@@ -12,11 +12,13 @@ ENV GPU=${GPU}
 # curl is useful for healthchecks
 # build-essential: newer torch versions JIT-compile Triton kernels at runtime
 # (e.g. whisper word-timestamp extraction), which needs a C compiler present.
+# tesseract-ocr: binary for the OCR option (on-screen text from video)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
     curl \
     build-essential \
+    tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage cache

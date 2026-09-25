@@ -9,14 +9,15 @@ import {
     Globe,
     Link,
     Radio,
-    Sparkles
+    Sparkles,
+    ScanText
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { InputMode, BackendMode } from "@/lib/types"
-import { SUPPORTED_LANGUAGES, ALL_SUPPORTED_FORMATS, SUPPORTED_VIDEO_FORMATS, LOCAL_TRANSLATION_LANGS, ASR_MODELS } from "@/lib/config"
+import { SUPPORTED_LANGUAGES, ALL_UPLOAD_FORMATS, SUPPORTED_VIDEO_FORMATS, SUPPORTED_IMAGE_FORMATS, LOCAL_TRANSLATION_LANGS, ASR_MODELS } from "@/lib/config"
 import { AudioRecorder } from "./AudioRecorder"
 import { LiveCaption } from "./LiveCaption"
 import type { TranscriptionSegment } from "@/lib/api"
@@ -49,6 +50,8 @@ interface UploadCardProps {
     setSeparateSpeech: (on: boolean) => void
     diarize: boolean
     setDiarize: (on: boolean) => void
+    ocrEnabled: boolean
+    setOcrEnabled: (on: boolean) => void
 }
 
 export function UploadCard({
@@ -78,7 +81,9 @@ export function UploadCard({
     separateSpeech,
     setSeparateSpeech,
     diarize,
-    setDiarize
+    setDiarize,
+    ocrEnabled,
+    setOcrEnabled
 }: UploadCardProps) {
     const translationUnavailable =
         language === "auto" || !hasAnyTranslationProvider || !isValidSunbirdPair
@@ -116,6 +121,13 @@ export function UploadCard({
 
     const isVideo = file?.type.startsWith("video/") ||
         SUPPORTED_VIDEO_FORMATS.includes(file?.name.split(".").pop()?.toLowerCase() || "")
+
+    // Images carry no audio — they go straight to OCR (text picked from the
+    // picture, then translated), so the action button changes accordingly.
+    const isImage = Boolean(file) && (
+        Boolean(file?.type.startsWith("image/")) ||
+        SUPPORTED_IMAGE_FORMATS.includes(file?.name.split(".").pop()?.toLowerCase() || "")
+    )
 
     return (
         <Card>
@@ -179,7 +191,7 @@ export function UploadCard({
                         <input
                             ref={fileInputRef}
                             type="file"
-                            accept={ALL_SUPPORTED_FORMATS.map((f) => `.${f}`).join(",")}
+                            accept={ALL_UPLOAD_FORMATS.map((f) => `.${f}`).join(",")}
                             onChange={handleFileSelect}
                             className="hidden"
                         />
@@ -203,7 +215,7 @@ export function UploadCard({
                                 </div>
                                 <p className="font-medium">Drop your file here or click to browse</p>
                                 <p className="text-sm text-muted-foreground">
-                                    MP3, WAV, OGG, M4A, MP4, WebM, FLAC
+                                    MP3, WAV, OGG, M4A, MP4, WebM, FLAC · JPG, PNG (OCR only)
                                 </p>
                                 <p className="text-xs text-muted-foreground/70 mt-1">
                                     Up to 1024 MB (1 GB)
@@ -360,6 +372,40 @@ export function UploadCard({
                                 />
                             </button>
                         </div>
+                        {/* OCR: pull the text rendered in the video (captions,
+                            slides, lower-thirds) so it can be picked and translated */}
+                        {inputMode === "file" && isVideo && (
+                            <div className="flex items-center justify-between gap-2 rounded-lg border border-input p-3 sm:col-span-2">
+                                <div className="min-w-0">
+                                    <p className="text-sm font-medium flex items-center gap-2">
+                                        <ScanText className="h-4 w-4 text-accent" />
+                                        OCR — On-screen text
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                        Extract text shown in the video (captions, slides, lower-thirds) so you can pick it and translate it
+                                    </p>
+                                </div>
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    aria-checked={ocrEnabled}
+                                    aria-label="Enable OCR (on-screen text extraction)"
+                                    onClick={() => setOcrEnabled(!ocrEnabled)}
+                                    className={cn(
+                                        "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors",
+                                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                                        ocrEnabled ? "bg-primary" : "bg-muted"
+                                    )}
+                                >
+                                    <span
+                                        className={cn(
+                                            "inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform",
+                                            ocrEnabled ? "translate-x-6" : "translate-x-1"
+                                        )}
+                                    />
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )}
 
@@ -407,13 +453,23 @@ export function UploadCard({
                     onClick={onTranscribe}
                     disabled={(inputMode === "file" && !file) || (inputMode === "url" && !videoUrl.trim()) || isTranscribing}
                 >
-                    {isTranscribing ? <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Transcribing...</> : <><Mic className="mr-2 h-5 w-5" /> Transcribe Now</>}
+                    {isTranscribing ? (
+                        <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> {isImage ? "Extracting text (OCR)..." : "Transcribing..."}</>
+                    ) : isImage ? (
+                        <><ScanText className="mr-2 h-5 w-5" /> Extract Text (OCR)</>
+                    ) : (
+                        <><Mic className="mr-2 h-5 w-5" /> Transcribe Now</>
+                    )}
                 </Button>
 
                 {isTranscribing && progress && progress.total > 1 && (
                     <div className="space-y-1">
                         <div className="flex items-center justify-between text-xs text-muted-foreground">
-                            <span>Transcribing chunk {Math.min(progress.current, progress.total)} of {progress.total}…</span>
+                            <span>
+                                {progress.phase === "ocr"
+                                    ? `Extracting on-screen text (OCR) — frame ${Math.min(progress.current, progress.total)} of ${progress.total}…`
+                                    : `Transcribing chunk ${Math.min(progress.current, progress.total)} of ${progress.total}…`}
+                            </span>
                             <span>{Math.round((progress.current / progress.total) * 100)}%</span>
                         </div>
                         <div className="h-2 w-full overflow-hidden rounded-full bg-muted">

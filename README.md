@@ -19,7 +19,8 @@ components/
                         TranscriptionCard, FeatureInfo
   ui/                   Shared primitives (button, card, toast, select)
 lib/
-  api.ts                Backend clients: local ASR/translation, Sunbird cloud, Hugging Face
+  api.ts                Backend clients: local ASR/OCR/translation, Sunbird cloud, Hugging Face
+  filesave.ts           Save transcript text with the media's name (Downloads by default; optional folder)
   config.ts             Env vars, supported languages, model list
   types.ts              Shared TypeScript types
   prisma.ts             Prisma client singleton
@@ -110,6 +111,7 @@ npm start
 | `NEXT_PUBLIC_SUNBIRD_API_URL` / `NEXT_PUBLIC_SUNBIRD_API_TOKEN` | SunbirdAI cloud API (optional cloud mode) |
 | `NEXT_PUBLIC_HF_API_TOKEN` / `NEXT_PUBLIC_HF_ASR_MODEL` | Hugging Face cloud inference (optional) |
 | `NEXTAUTH_URL` / `NEXTAUTH_SECRET` | NextAuth.js session config |
+| `NEXT_PUBLIC_SESSION_IDLE_TIMEOUT_MINUTES` | Idle minutes before the user must sign in again (default `30`). The session slides forward while the user is active; after this much inactivity the token expires and the open tab signs out to `/login?reason=idle` |
 
 ### ASR service (`backend/server.py`)
 
@@ -138,6 +140,8 @@ npm start
 | `WATCH_OUTPUT_FORMATS` | Comma-separated: `txt,srt,vtt` (default) |
 | `WATCH_DELETE_SOURCE` | `true` deletes the source file after transcription (default `false`) |
 | `WATCH_POLL_SECONDS` | Watch-folder scan interval (default `10`) |
+| `OCR_FRAME_INTERVAL` | Seconds between frames sampled by the OCR option (default `1.0`) |
+| `OCR_MAX_FRAMES` | Cap on frames scanned per video by OCR (default `300`) |
 
 ### Translation service (`backend/translation_server.py`)
 
@@ -146,9 +150,10 @@ npm start
 | `TRANSLATION_MODEL_ID` | Default `Sunbird/translate-nllb-3.3b-salt` — full NLLB-200-3.3B fine-tuned for the five Ugandan languages + Swahili/Lusoga/Rutooro; retains all other NLLB-200 languages. Not gated; CC-BY-NC-4.0 (non-commercial). |
 | `TRANSLATION_DEVICE` | `cuda` (default when available) or `cpu` |
 | `TRANSLATION_NUM_BEAMS` | Beam width (default `4`; higher = better, slower) |
-| `TRANSLATION_MAX_NEW_TOKENS` | Output cap per chunk (default `192`) |
-| `TRANSLATION_MAX_INPUT_TOKENS` | Input truncation limit (default `512`) |
-| `TRANSLATION_CHUNK_CHARS` | Long texts are split into chunks of this size (default `1000`) |
+| `TRANSLATION_MAX_NEW_TOKENS` | Output cap per chunk (default `512`; ~1.6× the chunk's token count) |
+| `TRANSLATION_MAX_INPUT_TOKENS` | Model input window, used to size chunks (default `512`) |
+| `TRANSLATION_CHUNK_CHARS` | Character cap per chunk, on top of the token budget (default `1000`) |
+| `TRANSLATION_MAX_SPLIT_DEPTH` | How many times a chunk may be halved and retried when it hits the output cap (default `6`) |
 | `TRANSLATION_PRELOAD_MODEL` | `true` loads the model at startup instead of on first request |
 | `TRANSLATION_CLEAR_CACHE_PER_REQUEST` | `true` frees GPU cache after each request (lower memory, higher latency) |
 | `TRANSLATION_FALLBACK_MODEL_ID` | Second model cached by `setup_models.py` (default `facebook/nllb-200-distilled-1.3B`) |
@@ -157,13 +162,15 @@ npm start
 
 **ASR** — `Sunbird/asr-whisper-large-v3-salt` (a Whisper large-v3 fine-tune) is optimized for Luganda, Acholi, Ateso, Lugbara, Runyankole, Lusoga, Rutooro, Kinyarwanda, Lumasaba and English. Other languages work by switching `ASR_MODEL_ID` (e.g. `openai/whisper-large-v3`) — the UI's model selector offers these without config changes.
 
-**Translation** — English ↔ the Ugandan languages via the SALT custom tokens, plus all other NLLB-200 languages (Swahili, Arabic, French, Spanish, German, Chinese, Hindi, Russian, Portuguese, Italian, ...) via standard NLLB codes — no separate fallback model needed at runtime.
+**Translation** — English ↔ the Ugandan languages via the SALT custom tokens, plus all other NLLB-200 languages (Swahili, Arabic, French, Spanish, German, Chinese, Hindi, Russian, Portuguese, Italian, ...) via standard NLLB codes — no separate fallback model needed at runtime. Long text is split on sentence **and newline** boundaries into chunks sized by the tokenizer's token window (not just characters), and any chunk whose translation hits the token cap is halved and retried — so transcripts and OCR output are translated end to end instead of being silently truncated.
 
 ## 🎙️ ASR Features
 
 | Feature | How it works |
 |---------|--------------|
 | **Timestamps & exports** | Every transcription returns `{text, segments:[{start,end,text}]}`; the UI exports Copy / TXT / SRT / VTT. |
+| **Media-named exports** | Saved text takes the audio/video/image's name — `interview.mp3` → `interview.txt`, `interview.srt`, `interview.translation.txt` — and lands in the browser's **Downloads** folder, so transcripts, translations and OCR output are easy to identify. The folder button (`lib/filesave.ts`) optionally grants one save folder via the File System Access API (Chrome/Edge) to write beside the media instead; elsewhere the filename is unchanged. |
+| **OCR (on-screen text)** | Toggle on video uploads (images run it directly): frames are sampled every `OCR_FRAME_INTERVAL` seconds (OpenCV) and read with Tesseract — captions, slides and lower-thirds come back as selectable text with their own Translate button (`POST /v1/video/ocr`). Needs `opencv-python-headless` + `pytesseract` and the `tesseract-ocr` system package (`apt install tesseract-ocr`); the endpoint answers `501` when they're missing. |
 | **Punctuation & paragraphs** | Whisper emits sentence punctuation; the server adds pause-based paragraph breaks (`PARAGRAPH_*` vars) and polishes casing. |
 | **Live captioning** | The mic streams ~6 s slices to `/v1/audio/live`; the previous slice's text is carried back as a decoder prompt for coherent running transcripts. |
 | **Progress reporting** | UI polls `/v1/audio/progress` (`{phase, current, total}`) for long files. |
@@ -180,6 +187,7 @@ npm start
 | `POST /v1/audio/transcriptions/url` | Transcribe from a URL (YouTube, TikTok, ...) via yt-dlp |
 | `POST /v1/audio/live` | Live slice transcription with per-session context |
 | `DELETE /v1/audio/live/{session_id}` | Reset a live session's context |
+| `POST /v1/video/ocr` | OCR a video's on-screen text or an image (`file`, optional `frame_interval`) → `{text, frames_scanned}` |
 | `GET /v1/audio/progress` | Current transcription progress |
 | `GET /health` | Health + current model + device |
 | `GET /v1/models` | Loaded model (OpenAI-compatible shape) |

@@ -45,6 +45,11 @@ protobuf>=3.20.0
 # URL audio extraction (YouTube, TikTok, etc.)
 yt-dlp>=2024.1.0
 
+# OCR (on-screen text extraction from video): frame sampling + Tesseract.
+# Also needs the tesseract binary: `apt install tesseract-ocr`.
+opencv-python-headless>=4.8.0
+pytesseract>=0.3.10
+
 # Optional: for faster inference on CPU
 
 # Database

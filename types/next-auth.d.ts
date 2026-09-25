@@ -21,5 +21,9 @@ declare module "next-auth" {
 declare module "next-auth/jwt" {
     interface JWT {
         id: string
+        /** Epoch ms of the last request that touched this session (idle timeout). */
+        lastActivity?: number
+        /** Set once the session was dropped for inactivity; forces a re-login. */
+        idleExpired?: boolean
     }
 }

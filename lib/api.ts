@@ -273,6 +273,34 @@ export const localAPI = {
         }
     },
 
+    /**
+     * OCR a video's on-screen text (captions, slides, ...) so it can be shown
+     * as selectable text and translated. Backed by /v1/video/ocr on the local
+     * ASR server (OpenCV frame sampling + Tesseract).
+     */
+    ocrVideo: async (
+        file: File,
+        serverUrl: string,
+        frameInterval?: number
+    ): Promise<{ text: string; frames: number }> => {
+        const formData = new FormData()
+        formData.append("file", file)
+        if (frameInterval && frameInterval > 0) {
+            formData.append("frame_interval", String(frameInterval))
+        }
+
+        const response = await fetch(`${serverUrl}/v1/video/ocr`, {
+            method: "POST",
+            body: formData,
+        })
+
+        await validateResponse(response, "Local OCR failed")
+
+        const data = await response.json()
+        const text = typeof data === "string" ? data : String(data?.text || "")
+        return { text, frames: Number(data?.frames_scanned) || 0 }
+    },
+
     translate: async (text: string, sourceLang: string, targetLang: string) => {
         const baseUrl = ENV.LOCAL_TRANSLATION_URL
         if (!baseUrl) {

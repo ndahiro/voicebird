@@ -14,6 +14,7 @@ import argparse
 import logging
 import os
 import gc
+import re
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -70,8 +71,11 @@ def _int_env(name: str, default: int) -> int:
 
 NUM_BEAMS = max(1, _int_env("TRANSLATION_NUM_BEAMS", 4))
 MAX_INPUT_TOKENS = max(64, _int_env("TRANSLATION_MAX_INPUT_TOKENS", 512))
-MAX_NEW_TOKENS = max(32, _int_env("TRANSLATION_MAX_NEW_TOKENS", 192))
+MAX_NEW_TOKENS = max(64, _int_env("TRANSLATION_MAX_NEW_TOKENS", 512))
 MAX_CHUNK_CHARS = max(200, _int_env("TRANSLATION_CHUNK_CHARS", 1000))
+# How many times a chunk may be halved and retried when the model runs out of
+# output tokens (6 => one chunk can end up split into up to 64 pieces).
+MAX_SPLIT_DEPTH = max(0, _int_env("TRANSLATION_MAX_SPLIT_DEPTH", 6))
 PRELOAD_MODEL = os.getenv("TRANSLATION_PRELOAD_MODEL", "false").strip().lower() in {"1", "true", "yes", "on"}
 CLEAR_CACHE_PER_REQUEST = os.getenv("TRANSLATION_CLEAR_CACHE_PER_REQUEST", "false").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -139,6 +143,96 @@ SALT_LANGUAGE_TOKENS = {
 }
 
 
+# --- Long-text chunking -----------------------------------------------------
+# Translation used to split text on sentence punctuation into ~1000-character
+# chunks with a flat output cap. Text without punctuation (OCR output, raw
+# transcripts) became one oversized chunk, and longer translations were cut off
+# mid-sentence. Chunks are now sized against the tokenizer's token window, and
+# any chunk that still runs out of output tokens is split and retried.
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?؟。！？])\s+|\n+")
+
+
+def _count_tokens(tokenizer, text: str) -> int:
+    """Token count for ``text`` (char estimate if the tokenizer cannot count)."""
+    if not text:
+        return 0
+    try:
+        return len(tokenizer(text, add_special_tokens=False)["input_ids"])
+    except Exception:
+        return max(1, len(text) // 4)
+
+
+def _split_sentences(text: str) -> list:
+    """Sentence-ish pieces; newlines count as boundaries too (OCR text and
+    transcripts are newline-separated and often have no sentence punctuation)."""
+    return [piece.strip() for piece in SENTENCE_SPLIT_RE.split(text) if piece.strip()]
+
+
+def _hard_split_by_tokens(tokenizer, text: str, max_tokens: int) -> list:
+    """Split a piece that is too long on its own, at word boundaries."""
+    pieces, current, current_tokens = [], [], 0
+    for word in text.split():
+        word_tokens = _count_tokens(tokenizer, word)
+        if current and current_tokens + word_tokens > max_tokens:
+            pieces.append(" ".join(current))
+            current, current_tokens = [], 0
+        current.append(word)
+        current_tokens += word_tokens
+    if current:
+        pieces.append(" ".join(current))
+    return pieces
+
+
+def chunk_text_for_translation(tokenizer, text: str, max_input_tokens: int, max_chars: int) -> list:
+    """Split ``text`` into chunks that each fit the model's input window.
+
+    Two budgets are respected: the tokenizer's token window (a low character
+    count does not guarantee a low token count — Bantu languages expand under
+    the NLLB vocabulary) and the configured character cap.
+    """
+    budget = max(32, max_input_tokens - 16)  # margin for special/forced tokens
+    chunks, current, current_len, current_tokens = [], [], 0, 0
+    for piece in _split_sentences(text):
+        piece_tokens = _count_tokens(tokenizer, piece)
+        if piece_tokens > budget:
+            if current:
+                chunks.append(" ".join(current))
+                current, current_len, current_tokens = [], 0, 0
+            chunks.extend(_hard_split_by_tokens(tokenizer, piece, budget))
+            continue
+        if current and (
+            current_tokens + piece_tokens > budget
+            or current_len + len(piece) + 1 > max_chars
+        ):
+            chunks.append(" ".join(current))
+            current, current_len, current_tokens = [], 0, 0
+        current.append(piece)
+        current_len += len(piece) + 1
+        current_tokens += piece_tokens
+    if current:
+        chunks.append(" ".join(current))
+    return chunks or [text.strip()]
+
+
+def _split_in_half(text: str) -> tuple:
+    """Split at the sentence break nearest the middle (word break if there is
+    no punctuation) so a retried chunk keeps readable seams."""
+    mid = len(text) // 2
+    cut = 0
+    for match in re.finditer(r"[.!?؟。！？]\s+", text):
+        if match.end() <= mid:
+            cut = match.end()
+        else:
+            break
+    if cut <= 0:
+        cut = text.rfind(" ", 0, mid)
+    if cut <= 0:
+        cut = text.find(" ", mid)
+    if cut <= 0:
+        return "", ""
+    return text[:cut].strip(), text[cut:].strip()
+
+
 class TranslationRequest(BaseModel):
     text: str
     source_language: str
@@ -165,7 +259,7 @@ async def lifespan(app: FastAPI):
     logger.info("Translation server starting (lazy loading enabled)")
     logger.info(f"Model will load on first translation request: {MODEL_ID}")
     logger.info(f"Using device: {DEVICE}")
-    logger.info(f"Generation config: beams={NUM_BEAMS}, max_input_tokens={MAX_INPUT_TOKENS}, max_new_tokens={MAX_NEW_TOKENS}, max_chunk_chars={MAX_CHUNK_CHARS}")
+    logger.info(f"Generation config: beams={NUM_BEAMS}, max_input_tokens={MAX_INPUT_TOKENS}, max_new_tokens={MAX_NEW_TOKENS}, max_chunk_chars={MAX_CHUNK_CHARS}, max_split_depth={MAX_SPLIT_DEPTH}")
     
     # Authenticate with Hugging Face if token provided
     if HF_TOKEN:
@@ -349,7 +443,7 @@ async def translate(request: TranslationRequest):
         logger.info(f"Text length: {text_len} characters")
         
         # Helper to translate a single chunk
-        def translate_chunk(chunk_text):
+        def generate_chunk(chunk_text):
             if not chunk_text.strip():
                 return ""
 
@@ -395,9 +489,18 @@ async def translate(request: TranslationRequest):
                 gen_tokenizer = nllb_tok
 
             token_count = int(chunk_inputs["input_ids"].shape[-1])
+            if token_count >= MAX_INPUT_TOKENS:
+                logger.warning(
+                    "Translation input reached MAX_INPUT_TOKENS=%d (%d tokens); "
+                    "the tokenizer dropped the tail of this chunk.",
+                    MAX_INPUT_TOKENS,
+                    token_count,
+                )
 
-            # Dynamic output cap keeps latency predictable while preserving quality.
-            max_new_tokens = min(MAX_NEW_TOKENS, max(32, int(token_count * 1.5)))
+            # Output cap: a translation needs roughly as many tokens as its
+            # input, so scale with the chunk. A small flat cap is what used to
+            # cut longer translations off mid-sentence.
+            max_new_tokens = min(MAX_NEW_TOKENS, max(64, int(token_count * 1.6) + 32))
 
             # Generate
             with torch.inference_mode():
@@ -410,49 +513,53 @@ async def translate(request: TranslationRequest):
                     early_stopping=True,
                     use_cache=True,
                 )
+            # A generation that used its whole token budget was cut off — the
+            # caller re-splits the chunk instead of losing its tail.
+            hit_output_cap = int(chunk_translated_tokens.shape[-1]) >= max_new_tokens
             
             # Decode
-            return gen_tokenizer.batch_decode(chunk_translated_tokens, skip_special_tokens=True)[0]
+            return (
+                gen_tokenizer.batch_decode(chunk_translated_tokens, skip_special_tokens=True)[0],
+                hit_output_cap,
+            )
 
-        if len(request.text) <= MAX_CHUNK_CHARS:
-            translated_text = translate_chunk(request.text)
-        else:
-            logger.info("Text too long, splitting into chunks...")
-            # Split by sentence endings including Arabic/Urdu question mark (؟)
-            import re
-            # Regex splits after ., !, ?, or ؟ followed by whitespace
-            sentences = re.split(r'(?<=[.!?؟])\s+', request.text)
-            chunks = []
-            current_chunk = []
-            current_len = 0
-            
-            for sentence in sentences:
-                sent_len = len(sentence)
-                # If a single sentence allows it, add to chunk
-                if current_len + sent_len < MAX_CHUNK_CHARS:
-                    current_chunk.append(sentence)
-                    current_len += sent_len
-                else:
-                    # If current chunk has data, translate it
-                    if current_chunk:
-                        chunks.append(translate_chunk(" ".join(current_chunk)))
-                        current_chunk = []
-                        current_len = 0
-                    
-                    # If the new sentence itself is too long, we might need to split it further or just translate it alone (it will be truncated if > 512 tokens)
-                    # For simplicity, we process it as its own chunk
-                    if sent_len > MAX_CHUNK_CHARS:
-                         # Fallback: translate huge sentence alone (will truncate)
-                         chunks.append(translate_chunk(sentence))
-                    else:
-                         current_chunk.append(sentence)
-                         current_len = sent_len
-            
-            # Process last chunk
-            if current_chunk:
-                chunks.append(translate_chunk(" ".join(current_chunk)))
-                
-            translated_text = " ".join(chunks)
+        # Token-aware chunking + retry: every chunk fits the model's input
+        # window, and a chunk whose translation runs out of output tokens is
+        # split and retried, so long text is never silently truncated.
+        chunk_tokenizer, _ = get_translation_model()
+        if not use_salt:
+            chunk_tokenizer.src_lang = src_lang
+
+        def translate_chunk(chunk_text, depth=0):
+            """Translate one chunk, halving and retrying it if the model hits the
+            output cap so the tail of the chunk is not dropped."""
+            if not chunk_text.strip():
+                return ""
+            text, hit_output_cap = generate_chunk(chunk_text)
+            if not hit_output_cap:
+                return text
+            left, right = _split_in_half(chunk_text)
+            if depth >= MAX_SPLIT_DEPTH or not (left and right):
+                logger.warning(
+                    "Translation hit the output cap at depth %d for a %d-char chunk; output may be incomplete.",
+                    depth,
+                    len(chunk_text),
+                )
+                return text
+            logger.info(
+                "Translation hit the output cap on a %d-char chunk; retrying as two smaller chunks (depth %d).",
+                len(chunk_text),
+                depth + 1,
+            )
+            return f"{translate_chunk(left, depth + 1)} {translate_chunk(right, depth + 1)}".strip()
+
+        chunks = chunk_text_for_translation(
+            chunk_tokenizer, request.text, MAX_INPUT_TOKENS, MAX_CHUNK_CHARS
+        )
+        logger.info("Translating %d chunk(s) covering %d characters", len(chunks), len(request.text))
+        translated_text = " ".join(
+            text for text in (translate_chunk(chunk) for chunk in chunks) if text
+        )
 
         logger.info(f"Translation complete: {len(translated_text)} characters")
         

@@ -10,6 +10,9 @@ export const ENV = {
     LOCAL_SERVER_URL: process.env.NEXT_PUBLIC_LOCAL_SERVER_URL || "http://localhost:8100",
     LOCAL_TRANSLATION_URL: process.env.NEXT_PUBLIC_LOCAL_TRANSLATION_URL || "",
     DEFAULT_BACKEND: process.env.NEXT_PUBLIC_DEFAULT_BACKEND || "local",
+    // Idle window after which the user must sign in again (mirrors the
+    // server-side setting in app/api/auth/[...nextauth]/route.ts).
+    SESSION_IDLE_TIMEOUT_MINUTES: Number(process.env.NEXT_PUBLIC_SESSION_IDLE_TIMEOUT_MINUTES || 30),
 }
 
 export const resolveBackendMode = (value: string): BackendMode => {
@@ -49,6 +52,10 @@ export const SUPPORTED_LANGUAGES: Language[] = [
 export const SUPPORTED_AUDIO_FORMATS = ["mp3", "wav", "ogg", "m4a", "aac"]
 export const SUPPORTED_VIDEO_FORMATS = ["mp4", "webm", "mov"]
 export const ALL_SUPPORTED_FORMATS = [...SUPPORTED_AUDIO_FORMATS, ...SUPPORTED_VIDEO_FORMATS]
+// Images carry no audio — they are OCR-only (text picked from the picture,
+// then translated) and handled by the local backend.
+export const SUPPORTED_IMAGE_FORMATS = ["jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff"]
+export const ALL_UPLOAD_FORMATS = [...ALL_SUPPORTED_FORMATS, ...SUPPORTED_IMAGE_FORMATS]
 export const SUNBIRD_TRANSLATION_CODES = ["lug", "ach", "teo", "lgg", "nyn", "eng"]
 export const LOCAL_TRANSLATION_LANGS = ["lug", "ach", "teo", "lgg", "nyn", "fra", "swa", "ara", "spa", "deu", "zho", "hin", "rus", "por", "ita"]
 

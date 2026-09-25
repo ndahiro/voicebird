@@ -87,6 +87,26 @@ except Exception:
     HAS_PYANNOTE = False
     logger.info("pyannote.audio not installed — speaker identification disabled (pip install pyannote.audio).")
 
+# Optional OCR (on-screen text extraction from video): OpenCV samples frames
+# and Tesseract reads any text rendered on screen (captions, slides,
+# lower-thirds) so it can be shown as selectable text and translated alongside
+# the spoken transcript. Needs the Python packages (opencv-python-headless,
+# pytesseract) AND the tesseract system binary (`apt install tesseract-ocr`).
+try:
+    import cv2
+    import pytesseract
+    HAS_OCR = True
+except Exception as e:
+    HAS_OCR = False
+    cv2 = None
+    pytesseract = None
+    logger.info("OCR disabled — install opencv-python-headless + pytesseract to enable it (%s).", e)
+
+# OCR tuning: seconds between sampled frames, and a cap so a long video can't
+# pin the CPU for hours.
+OCR_FRAME_INTERVAL = float(os.getenv("OCR_FRAME_INTERVAL", "1.0"))
+OCR_MAX_FRAMES = int(os.getenv("OCR_MAX_FRAMES", "300"))
+
 SPEECH_SEPARATION = os.getenv("SPEECH_SEPARATION", "false").lower() == "true"
 SPEECH_SEPARATION_DEVICE = os.getenv(
     "SPEECH_SEPARATION_DEVICE", "cuda" if torch.cuda.is_available() else "cpu"
@@ -332,6 +352,90 @@ def format_transcript(segments: list, text: str, output_format: str = "txt") -> 
         return "\n".join(lines)
     # TXT (default)
     return text
+
+
+# --- OCR: on-screen text extraction from video ------------------------------
+# pytesseract imports fine even when the `tesseract` binary is missing, so the
+# probe runs once at first use instead of failing every request with
+# TesseractNotFoundError.
+_ocr_probed = False
+_ocr_ok = False
+
+
+def _ocr_available() -> bool:
+    global _ocr_probed, _ocr_ok
+    if not HAS_OCR:
+        return False
+    if not _ocr_probed:
+        try:
+            pytesseract.get_tesseract_version()
+            _ocr_ok = True
+            logger.info("OCR enabled (tesseract %s).", pytesseract.get_tesseract_version())
+        except Exception as e:
+            _ocr_ok = False
+            logger.warning(
+                "OCR disabled: tesseract binary not usable (%s). "
+                "Install it, e.g. `apt install tesseract-ocr` / `brew install tesseract`.",
+                e,
+            )
+        _ocr_probed = True
+    return _ocr_ok
+
+
+def _ocr_frame(frame) -> str:
+    """OCR one video frame. Small frames are upscaled first — Tesseract reads
+    noticeably more text from larger glyphs."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    height, width = gray.shape[:2]
+    longest = max(height, width)
+    if 0 < longest < 1600:
+        scale = 1600 / longest
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    text = pytesseract.image_to_string(gray)
+    if not text.strip():
+        # psm 11 = sparse text — better for captions/lower-thirds over busy frames
+        text = pytesseract.image_to_string(gray, config="--psm 11")
+    return text
+
+
+def ocr_video_frames(path: str, frame_interval: float) -> tuple:
+    """Sample frames from ``path`` and OCR the text displayed on screen.
+
+    Returns ``(text, frames_scanned)``. Identical readings are deduplicated —
+    a caption held on screen for a minute produces one entry, not sixty.
+    """
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video for OCR: {os.path.basename(path)}")
+    try:
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0) or 25.0
+        step = max(1, int(round(fps * max(0.1, frame_interval))))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        expected = max(1, total_frames // step) if total_frames else 1
+        pieces, seen = [], set()
+        index = scanned = 0
+        _update_progress("ocr", 0, expected)
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if index % step == 0:
+                scanned += 1
+                text = _ocr_frame(frame).strip()
+                key = " ".join(text.split()).lower()
+                if key and key not in seen:
+                    seen.add(key)
+                    pieces.append(text)
+                _update_progress("ocr", min(scanned, expected), expected)
+                if scanned >= OCR_MAX_FRAMES:
+                    logger.info(f"OCR: stopping at OCR_MAX_FRAMES={OCR_MAX_FRAMES}")
+                    break
+            index += 1
+        _update_progress("idle", 0, 1)
+        logger.info(f"OCR complete: {scanned} frames scanned, {len(pieces)} produced text")
+        return "\n\n".join(pieces), scanned
+    finally:
+        cap.release()
 
 
 # --- Speech separation & speaker identification -----------------------------
@@ -1877,6 +1981,108 @@ async def transcribe_audio_url(
     finally:
         _asr_queue_size -= 1
         logger.info(f"URL transcription slot released. Queue size: {_asr_queue_size}")
+
+
+OCR_VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v", ".mpg", ".mpeg"}
+OCR_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+OCR_EXTENSIONS = OCR_VIDEO_EXTENSIONS | OCR_IMAGE_EXTENSIONS
+
+
+def ocr_media_text(path: str, frame_interval: float) -> tuple:
+    """OCR a still image, or sample frames from a video.
+
+    Images (jpg/png/...) carry no audio — they come in as OCR-only input and
+    produce a single reading. Returns ``(text, frames_scanned)``.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext in OCR_IMAGE_EXTENSIONS:
+        _update_progress("ocr", 1, 1)
+        # np.fromfile + imdecode tolerates non-ASCII paths cv2.imread rejects.
+        data = np.fromfile(path, dtype=np.uint8)
+        image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        if image is None:
+            raise RuntimeError(f"Could not read image: {os.path.basename(path)}")
+        text = _ocr_frame(image).strip()
+        _update_progress("idle", 0, 1)
+        logger.info(f"Image OCR complete: {len(text)} characters")
+        return text, 1
+    return ocr_video_frames(path, frame_interval)
+
+
+@app.post("/v1/video/ocr")
+async def ocr_video(
+    file: UploadFile = File(...),
+    frame_interval: Optional[float] = Form(None),
+):
+    """Extract on-screen/printed text (OCR) from an uploaded video or image.
+
+    Videos are sampled every ``frame_interval`` seconds (default
+    OCR_FRAME_INTERVAL) and read with Tesseract — captions, slides,
+    lower-thirds; images are read in one pass. Either way the frontend gets
+    selectable text it can feed through the translation pipeline.
+
+    Returns ``{"text": ..., "frames_scanned": ..., "filename": ...}``.
+    """
+    if not _ocr_available():
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "OCR unavailable: install opencv-python-headless + pytesseract and "
+                "the tesseract binary (apt install tesseract-ocr / brew install tesseract)."
+            ),
+        )
+
+    file_ext = os.path.splitext(file.filename or "")[1].lower()
+    if file_ext not in OCR_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported file type for OCR: {file_ext}. "
+                f"Allowed: {', '.join(sorted(OCR_EXTENSIONS))}"
+            ),
+        )
+
+    content = await file.read()
+    max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large: {len(content) / 1024 / 1024:.1f} MB. Maximum allowed: {MAX_FILE_SIZE_MB} MB.",
+        )
+
+    interval = frame_interval if frame_interval and frame_interval > 0 else OCR_FRAME_INTERVAL
+    loop = asyncio.get_event_loop()
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        # Runs in the thread pool: OCR is CPU-bound and must not block the event
+        # loop (the ASR lock is untouched — OCR and transcription can overlap).
+        text, scanned = await loop.run_in_executor(
+            None, partial(ocr_media_text, tmp_path, interval)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"OCR error: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+    return JSONResponse(
+        content={
+            "text": text,
+            "frames_scanned": scanned,
+            "filename": file.filename,
+        }
+    )
 
 
 @app.post("/v1/audio/live")
