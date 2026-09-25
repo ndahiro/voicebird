@@ -38,7 +38,7 @@ import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from huggingface_hub import login
+from huggingface_hub import login, whoami
 from pydantic import BaseModel
 from transformers import AutoModelForSeq2SeqLM, NllbTokenizer
 
@@ -254,17 +254,49 @@ class HealthResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lazy loading - models load on first request, cleanup on shutdown."""
-    global tokenizer, model
+    global tokenizer, model, HF_TOKEN
 
     logger.info("Translation server starting (lazy loading enabled)")
     logger.info(f"Model will load on first translation request: {MODEL_ID}")
     logger.info(f"Using device: {DEVICE}")
     logger.info(f"Generation config: beams={NUM_BEAMS}, max_input_tokens={MAX_INPUT_TOKENS}, max_new_tokens={MAX_NEW_TOKENS}, max_chunk_chars={MAX_CHUNK_CHARS}, max_split_depth={MAX_SPLIT_DEPTH}")
     
-    # Authenticate with Hugging Face if token provided
+    # Authenticate with Hugging Face if a token is provided.
+    #
+    # The token is validated first, because an expired one is not merely a failed
+    # login: `from_pretrained(token=None)` still picks up the HF_TOKEN environment
+    # variable, and Hugging Face answers 401 for *public* repositories too when a
+    # bad token is attached — which crash-loops this server on startup. So an
+    # unusable token is dropped from the process environment as well, leaving the
+    # server anonymous: public models load as usual and a gated one reports its
+    # 401 when it is actually requested.
     if HF_TOKEN:
-        logger.info("Authenticating with Hugging Face...")
-        login(token=HF_TOKEN)
+        try:
+            account = whoami(token=HF_TOKEN)
+            logger.info(
+                "Hugging Face token accepted (account: %s).",
+                account.get("name") if isinstance(account, dict) else account,
+            )
+        except Exception as e:
+            logger.warning(
+                "HF_TOKEN is not usable (%s). Dropping it and continuing anonymously — "
+                "public models still load; gated models (e.g. the Sunbird SALT "
+                "checkpoints) need a valid HF_TOKEN.",
+                str(e)[:200],
+            )
+            HF_TOKEN = ""
+            os.environ.pop("HF_TOKEN", None)
+            os.environ.pop("HUGGING_FACE_HUB_TOKEN", None)
+        else:
+            try:
+                logger.info("Authenticating with Hugging Face...")
+                login(token=HF_TOKEN)
+            except Exception as e:
+                logger.warning(
+                    "Storing the Hugging Face token failed (%s); it will still be "
+                    "sent explicitly with each request.",
+                    str(e)[:200],
+                )
     else:
         logger.warning("No HF_TOKEN set. Public models will work, but gated models require authentication.")
     

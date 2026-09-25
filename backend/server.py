@@ -38,7 +38,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from huggingface_hub import login
+from huggingface_hub import login, whoami
 from pydantic import BaseModel
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -185,6 +185,51 @@ def _clean_hf_token(raw_value: Optional[str]) -> str:
 
 
 HF_TOKEN = _clean_hf_token(os.getenv("HF_TOKEN"))
+
+# Whether HF_TOKEN has been probed against the Hub yet (once per process).
+_hf_token_checked = False
+
+
+def _hf_login_if_needed() -> None:
+    """Authenticate with Hugging Face once, dropping an unusable token.
+
+    An expired token is not merely a failed login: ``from_pretrained`` and
+    ``snapshot_download`` fall back to the ``HF_TOKEN`` environment variable, and
+    Hugging Face answers 401 even for *public* repositories when a bad token is
+    attached. That would fail every request on a machine whose models are
+    already cached, so the token is validated first; if it is unusable it is
+    dropped from the process environment and the server continues anonymously.
+    """
+    global HF_TOKEN, _hf_token_checked
+    if _hf_token_checked or not HF_TOKEN:
+        return
+    _hf_token_checked = True
+
+    try:
+        account = whoami(token=HF_TOKEN)
+        logger.info(
+            "Hugging Face token accepted (account: %s).",
+            account.get("name") if isinstance(account, dict) else account,
+        )
+    except Exception as e:
+        logger.warning(
+            "HF_TOKEN is not usable (%s). Dropping it and continuing anonymously — "
+            "models already in the cache still load; gated models need a valid HF_TOKEN.",
+            str(e)[:200],
+        )
+        HF_TOKEN = ""
+        os.environ.pop("HF_TOKEN", None)
+        os.environ.pop("HUGGING_FACE_HUB_TOKEN", None)
+        return
+
+    try:
+        login(token=HF_TOKEN)
+    except Exception as e:
+        logger.warning(
+            "Storing the Hugging Face token failed (%s); it is still sent "
+            "explicitly with each request.",
+            str(e)[:200],
+        )
 
 
 def _is_complete_model_dir(model_dir: Path) -> bool:
@@ -1306,7 +1351,7 @@ def _build_transformers_pipeline(model_id: str):
     source = str(local_path) if local_path else model_id
     using_local = local_path is not None
     if HF_TOKEN and not using_local:
-        login(token=HF_TOKEN)
+        _hf_login_if_needed()
     torch_dtype = torch.float16 if DEVICE == "cuda" else torch.float32
     return pipeline(
         "automatic-speech-recognition",
@@ -1380,7 +1425,7 @@ def get_asr_pipeline(model_id: str = None):
         def _load_pipeline(source: str, local_only: bool):
             # Authenticate only when remote fetch is expected.
             if HF_TOKEN and not local_only:
-                login(token=HF_TOKEN)
+                _hf_login_if_needed()
 
             # Note: `local_files_only` is intentionally omitted here. Newer
             # transformers versions reject it as an unused model_kwarg in the
